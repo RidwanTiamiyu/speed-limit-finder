@@ -494,7 +494,7 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 
   // restore saved settings
   // Optional shared client token (option B). Leave empty so each user pastes their own.
-  const DEFAULT_TOKEN = '';
+  const DEFAULT_TOKEN = 'MLY|39881675504756889|c058b5b6ae5e944cb0fb9f8bbced9d74';
   const t = store.get('sl_token') || DEFAULT_TOKEN; if (t) $('token').value = t;
   const u = store.get('sl_unit'); if (u === 'mph' || u === 'kph') $('unit').value = u;
   window.__SL = { S, parseMaxspeed, parseSignValue, compare, load };

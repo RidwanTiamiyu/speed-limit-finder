@@ -52,6 +52,8 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .sg span { display: grid; place-items: center; min-width: 32px; height: 36px; padding: 0 4px; background: #fff; color: #111; border: 2px solid #111; border-radius: 4px; font: 700 15px/1 system-ui, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
 .sg.bad span { border-color: #d12f2f; box-shadow: 0 0 0 3px rgba(209,47,47,.4); }
 .sg.match span { border-color: #1b8a4b; }
+.sg.sus span { border-style: dashed; border-color: #8a8f98; color: #8a8f98; box-shadow: none; }
+.pop .warn { margin: 4px 0; color: #b45309; font-size: 12px; }
 .pop b { font-size: 15px; }
 .pop table { font-size: 12px; margin-top: 4px; }
 .pop iframe { width: 100%; height: 150px; border: 0; margin-top: 6px; border-radius: 4px; }
@@ -117,7 +119,8 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
       <div class="legend">
         <span><i style="border-color:#2f7ed8"></i>OSM maxspeed</span>
         <span><i style="border-color:#c026d3;border-top-style:dashed"></i>Your GIS</span>
-        <span class="bad">Red ring = sign disagrees</span>
+        <span class="bad">Red ring = sign disagrees</span><br>
+        <span class="na">Grey dashed = probably a route marker, or hidden by you</span>
       </div>
     </section>
 
@@ -152,7 +155,7 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
   };
 
   // ---------- state ----------
-  const S = { signs: [], osm: [], gis: [], gisRaw: null, markers: new Map() };
+  const S = { signs: [], osm: [], gis: [], gisRaw: null, markers: new Map(), hidden: new Set() };
 
   // ---------- map ----------
   const map = L.map('map').setView([35.2271, -80.8431], 16);
@@ -295,8 +298,9 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
   }
 
   async function fetchOsm(b) {
-    const q = '[out:json][timeout:25];way["highway"]["maxspeed"](' +
-      [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map(x => x.toFixed(6)).join(',') + ');out tags geom;';
+    // Roads with a speed tag, plus numbered routes (ref like "US 70") so route shields can be told apart from speed signs.
+    const bb = '(' + [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map(x => x.toFixed(6)).join(',') + ')';
+    const q = '[out:json][timeout:25];(way["highway"]["maxspeed"]' + bb + ';way["highway"]["ref"]' + bb + ';);out tags geom;';
     const res = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q)
     });
@@ -317,6 +321,7 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
   function drawOsm() {
     osmLayer.clearLayers();
     for (const ln of S.osm) {
+      if (ln.value == null) continue;
       const p = L.polyline(ln.pts, { color: colorFor(ln.value), weight: 5, opacity: 0.75 }).addTo(osmLayer);
       p.bindPopup('<div class="pop"><b>' + esc(ln.raw) + '</b><br>' + esc(ln.props.name || ln.props.ref || 'Unnamed road') +
         '<br><a href="https://www.openstreetmap.org/way/' + ln.id + '" target="_blank" rel="noopener">OSM way ' + ln.id + '</a></div>');
@@ -340,30 +345,60 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
     : '<span class="bad">' + r.values.join(', ') + '</span>';
 
   function popupHtml(sg) {
-    return '<div class="pop"><b>' + sg.value + ' ' + unitLabel() + '</b> sign' +
+    const warn = sg.shield ? '<p class="warn">Probably a route marker (' + esc(sg.shield) + '), not a speed limit. Ignored in the comparison.</p>'
+      : sg.hidden ? '<p class="warn">You marked this as not a speed sign. Ignored in the comparison.</p>' : '';
+    return '<div class="pop"><b>' + sg.value + ' ' + unitLabel() + '</b> sign' + warn +
       '<table><tr><td>OSM</td><td>' + cell(sg.cOsm) + '</td></tr><tr><td>GIS</td><td>' + (S.gis.length ? cell(sg.cGis) : '<span class="na">not loaded</span>') + '</td></tr>' +
       '<tr><td>First seen</td><td>' + fmtDate(sg.first) + '</td></tr><tr><td>Last seen</td><td>' + fmtDate(sg.last) + '</td></tr></table>' +
       '<p style="margin:6px 0 0"><a href="' + svUrl(sg.lat, sg.lng) + '" target="_blank" rel="noopener">Open Google Street View here</a></p>' +
-      '<div class="photo" data-id="' + esc(sg.id) + '"></div></div>';
+      '<div class="photo" data-id="' + esc(sg.id) + '"></div>' +
+      '<p style="margin:6px 0 0"><button type="button" class="hideBtn">' + (sg.hidden ? 'Undo: it is a speed sign' : 'Not a speed sign? Hide it') + '</button></p></div>';
+  }
+
+  // A detected "70" right next to a road whose route number is 70 (e.g. ref "US 70;NC 54") is probably a route shield.
+  function routeShield(sg) {
+    const re = new RegExp('(^|[^0-9])' + sg.value + '([^0-9]|$)');
+    const pad = 0.001;
+    for (const ln of S.osm) {
+      const ref = ln.props && ln.props.ref;
+      if (!ref || !re.test(ref)) continue;
+      const [s, w, n, e] = ln.bb;
+      if (sg.lat < s - pad || sg.lat > n + pad || sg.lng < w - pad || sg.lng > e + pad) continue;
+      if (distToLine(sg.lat, sg.lng, ln.pts) <= 40) return ref;
+    }
+    return null;
   }
 
   function analyse() {
     for (const sg of S.signs) {
       sg.cOsm = compare(sg, S.osm);
       sg.cGis = S.gis.length ? compare(sg, S.gis) : { status: 'nodata', values: [] };
-      sg.bad = sg.cOsm.status === 'mismatch' || sg.cGis.status === 'mismatch';
-      sg.good = !sg.bad && (sg.cOsm.status === 'match' || sg.cGis.status === 'match');
+      sg.shield = routeShield(sg);
+      sg.hidden = S.hidden.has(sg.id);
+      sg.sus = !!(sg.shield || sg.hidden);
+      sg.bad = !sg.sus && (sg.cOsm.status === 'mismatch' || sg.cGis.status === 'mismatch');
+      sg.good = !sg.sus && !sg.bad && (sg.cOsm.status === 'match' || sg.cGis.status === 'match');
     }
+  }
+
+  function toggleHidden(sg) {
+    if (S.hidden.has(sg.id)) S.hidden.delete(sg.id); else S.hidden.add(sg.id);
+    store.set('sl_hidden', JSON.stringify([...S.hidden]));
+    refresh();
   }
 
   function drawSigns() {
     signLayer.clearLayers();
     S.markers.clear();
     for (const sg of S.signs) {
-      const icon = L.divIcon({ className: 'sg ' + (sg.bad ? 'bad' : sg.good ? 'match' : ''), html: '<span>' + sg.value + '</span>', iconSize: [36, 38], iconAnchor: [18, 19] });
+      const icon = L.divIcon({ className: 'sg ' + (sg.sus ? 'sus' : sg.bad ? 'bad' : sg.good ? 'match' : ''), html: '<span>' + sg.value + '</span>', iconSize: [36, 38], iconAnchor: [18, 19] });
       const m = L.marker([sg.lat, sg.lng], { icon, zIndexOffset: sg.bad ? 1000 : 0 }).addTo(signLayer);
       m.bindPopup(() => popupHtml(sg), { minWidth: 220 });
-      m.on('popupopen', () => loadPhoto(sg));
+      m.on('popupopen', e => {
+        loadPhoto(sg);
+        const btn = e.popup.getElement() && e.popup.getElement().querySelector('.hideBtn');
+        if (btn) btn.addEventListener('click', () => { map.closePopup(); toggleHidden(sg); });
+      });
       S.markers.set(sg.id, m);
     }
   }
@@ -420,8 +455,9 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
       ]);
       S.osm = osm; S.signs = signs;
       refresh();
-      const bad = S.signs.filter(s => s.bad).length;
-      setStatus(S.signs.length + ' speed-limit signs, ' + S.osm.length + ' OSM roads with a limit. ' + bad + ' disagree.');
+      const bad = S.signs.filter(s => s.bad).length, sus = S.signs.filter(s => s.sus).length;
+      setStatus(S.signs.length + ' speed-limit signs, ' + S.osm.filter(l => l.value != null).length + ' OSM roads with a limit. ' + bad + ' disagree.' +
+        (sus ? ' ' + sus + ' look like route markers or were hidden (grey).' : ''));
     } catch (err) {
       setStatus('Could not load signs: ' + err.message, true);
     } finally {
@@ -483,8 +519,9 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
   $('q').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
 
   $('csvBtn').addEventListener('click', () => {
-    const rows = [['id', 'lat', 'lng', 'sign_limit', 'unit', 'osm_values', 'osm_status', 'gis_values', 'gis_status', 'first_seen', 'last_seen', 'street_view']];
-    for (const s of S.signs) rows.push([s.id, s.lat, s.lng, s.value, unitLabel(), s.cOsm.values.join('|'), s.cOsm.status, s.cGis.values.join('|'), s.cGis.status, fmtDate(s.first), fmtDate(s.last), svUrl(s.lat, s.lng)]);
+    const rows = [['id', 'lat', 'lng', 'sign_limit', 'unit', 'osm_values', 'osm_status', 'gis_values', 'gis_status', 'flag', 'first_seen', 'last_seen', 'street_view']];
+    for (const s of S.signs) rows.push([s.id, s.lat, s.lng, s.value, unitLabel(), s.cOsm.values.join('|'), s.cOsm.status, s.cGis.values.join('|'), s.cGis.status,
+      s.shield ? 'route marker? ' + s.shield : s.hidden ? 'hidden by user' : '', fmtDate(s.first), fmtDate(s.last), svUrl(s.lat, s.lng)]);
     const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
@@ -497,6 +534,7 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
   const DEFAULT_TOKEN = 'MLY|39881675504756889|c058b5b6ae5e944cb0fb9f8bbced9d74';
   const t = store.get('sl_token') || DEFAULT_TOKEN; if (t) $('token').value = t;
   const u = store.get('sl_unit'); if (u === 'mph' || u === 'kph') $('unit').value = u;
+  try { (JSON.parse(store.get('sl_hidden') || '[]') || []).forEach(id => S.hidden.add(String(id))); } catch (e) {}
   window.__SL = { S, parseMaxspeed, parseSignValue, compare, load };
 })();
 </script>

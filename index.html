@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speed Limit Finder</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+/* Layout: map fills the screen, control panel on the left (stacked under the map on phones). */
+:root {
+  --bg: #f4f6f8; --panel: #ffffff; --fg: #15202b; --muted: #5b6b7a; --line: #d5dde5;
+  --accent: #0b6bcb; --accent-fg: #ffffff; --bad: #d12f2f; --ok: #1b8a4b; --warn: #b7791f;
+  --chip: #eaf0f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f1419; --panel: #171e26; --fg: #e6edf3; --muted: #93a4b5; --line: #2b3745;
+    --accent: #4aa3ff; --accent-fg: #06121f; --bad: #ff6b6b; --ok: #4cc38a; --warn: #e0b04a; --chip: #202a35; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+#app { height: 100%; display: grid; grid-template-columns: 360px 1fr; }
+#panel { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#map { height: 100%; min-height: 320px; }
+h1 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
+h2 { font-size: 11px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+.sub { color: var(--muted); font-size: 12px; margin: 2px 0 0; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+input[type=text], input[type=password], input[type=number], select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; min-width: 0; }
+input[type=file] { width: 100%; font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: flex-end; }
+.row > * { flex: 1; min-width: 0; }
+button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--fg); padding: 8px 12px; border-radius: 6px; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+button:disabled { opacity: .55; cursor: default; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#status { font-size: 12px; color: var(--muted); min-height: 2.8em; }
+#status.err { color: var(--bad); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 0; border-top: 4px solid; vertical-align: middle; margin-right: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; }
+.tw { overflow-x: auto; }
+.pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; background: var(--chip); }
+.bad { color: var(--bad); font-weight: 600; }
+.ok { color: var(--ok); }
+.na { color: var(--muted); }
+details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.sg { background: none; border: 0; }
+.sg span { display: grid; place-items: center; min-width: 32px; height: 36px; padding: 0 4px; background: #fff; color: #111; border: 2px solid #111; border-radius: 4px; font: 700 15px/1 system-ui, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+.sg.bad span { border-color: #d12f2f; box-shadow: 0 0 0 3px rgba(209,47,47,.4); }
+.sg.match span { border-color: #1b8a4b; }
+.pop b { font-size: 15px; }
+.pop table { font-size: 12px; margin-top: 4px; }
+.pop iframe { width: 100%; height: 150px; border: 0; margin-top: 6px; border-radius: 4px; }
+@media (max-width: 760px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: 58vh 1fr; }
+  #map { order: -1; }
+  #panel { border-right: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <div>
+      <h1>Speed Limit Finder</h1>
+      <p class="sub">Speed-limit signs seen in street imagery, compared with OpenStreetMap and your GIS layer.</p>
+    </div>
+
+    <section>
+      <h2>Go to</h2>
+      <div class="row">
+        <div><input id="q" type="text" placeholder="Address or lat,lng" aria-label="Address or latitude, longitude"></div>
+        <div style="flex:0 0 auto"><button id="goBtn" type="button">Go</button></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Mapillary token</h2>
+      <label for="token">Access token (stays in this browser only)</label>
+      <input id="token" type="password" autocomplete="off" placeholder="MLY|...">
+    </section>
+
+    <section>
+      <div class="row">
+        <div>
+          <label for="unit">Sign unit</label>
+          <select id="unit"><option value="mph">mph</option><option value="kph">km/h</option></select>
+        </div>
+        <div>
+          <label for="radius">Match radius (m)</label>
+          <input id="radius" type="number" min="5" max="100" value="25">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <button id="loadBtn" class="primary" type="button" style="width:100%">Load signs and roads in view</button>
+      <div id="status" role="status" aria-live="polite">Zoom in to street level (about zoom 16 or closer), then load.</div>
+    </section>
+
+    <section>
+      <h2>Your GIS layer (optional)</h2>
+      <label for="gisFile">GeoJSON in WGS84 (lat/long) with a speed attribute</label>
+      <input id="gisFile" type="file" accept=".geojson,.json,application/geo+json,application/json">
+      <div id="gisPick" hidden style="margin-top:8px">
+        <label for="gisField">Speed attribute</label>
+        <select id="gisField"></select>
+      </div>
+    </section>
+
+    <section>
+      <h2>Legend</h2>
+      <div class="legend">
+        <span><i style="border-color:#2f7ed8"></i>OSM maxspeed</span>
+        <span><i style="border-color:#c026d3;border-top-style:dashed"></i>Your GIS</span>
+        <span class="bad">Red ring = sign disagrees</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Disagreements <span id="count" class="pill">0</span></h2>
+      <div class="tw"><table id="tbl"><thead><tr><th>Sign</th><th>OSM</th><th>GIS</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-top:8px"><div><button id="csvBtn" type="button" style="width:100%" disabled>Export all signs (CSV)</button></div></div>
+    </section>
+
+    <p class="sub">Sign data &copy; <a href="https://www.mapillary.com/" target="_blank" rel="noopener">Mapillary</a>. Road data &copy; OpenStreetMap contributors.</p>
+
+    <details>
+      <summary>How to read this</summary>
+      <p class="sub">Signs come from computer-vision detections in Mapillary photos, so some are wrong and some are missing where no one uploaded photos. A sign is compared with the nearest road lines inside the match radius. A cross street or ramp sign can trigger a false flag, so check the photo or Street View before trusting a red ring.</p>
+    </details>
+  </aside>
+  <div id="map" aria-label="Map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  if (typeof L === 'undefined') {
+    $('map').innerHTML = '<p style="padding:24px;max-width:420px">The map library did not load. This usually means the file is open inside a preview pane that blocks outside scripts. Download the file and open it directly in Chrome with an internet connection.</p>';
+    $('loadBtn').disabled = true;
+    return;
+  }
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+
+  // ---------- state ----------
+  const S = { signs: [], osm: [], gis: [], gisRaw: null, markers: new Map() };
+
+  // ---------- map ----------
+  const map = L.map('map').setView([35.2271, -80.8431], 16);
+  // OpenStreetMap only serves tiles to pages that send a valid Referer. A file opened from disk sends none,
+  // so in that case skip the background tiles. Signs, roads and Street View links still work.
+  if (location.protocol === 'file:') {
+    $('map').style.background = 'repeating-conic-gradient(#e4e8ec 0% 25%, #f2f4f6 0% 50%) 50% / 40px 40px';
+    setStatus('Background map is off because this file was opened from your disk (OpenStreetMap blocks that). Signs, roads and Street View links still work. Host the page, for example on GitHub Pages, to get the background map.', true);
+  } else {
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+  }
+  const osmLayer = L.layerGroup().addTo(map);
+  const gisLayer = L.layerGroup().addTo(map);
+  const signLayer = L.layerGroup().addTo(map);
+
+  // ---------- helpers ----------
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const unit = () => $('unit').value;
+  const unitLabel = () => (unit() === 'mph' ? 'mph' : 'km/h');
+  const radius = () => Math.max(5, Math.min(100, +$('radius').value || 25));
+
+  function setStatus(msg, isErr) {
+    const el = $('status');
+    el.textContent = msg;
+    el.className = isErr ? 'err' : '';
+  }
+
+  // Convert a value expressed in `from` to the currently selected unit, rounded to the nearest 5.
+  function toSelected(n, from) {
+    const to = unit();
+    let v = n;
+    if (from !== to) v = to === 'mph' ? n * 0.621371 : n * 1.609344;
+    return Math.round(v / 5) * 5;
+  }
+
+  // OSM maxspeed: "35 mph", "50" (km/h by OSM convention). Returns value in selected unit or null.
+  function parseMaxspeed(s) {
+    if (s == null) return null;
+    const m = String(s).trim().match(/^(\d+(?:\.\d+)?)\s*(mph|km\/h|kmh|kph)?$/i);
+    if (!m) return null;
+    const from = /mph/i.test(m[2] || '') ? 'mph' : 'kph';
+    return toSelected(parseFloat(m[1]), from);
+  }
+
+  // Mapillary object_value like regulatory--maximum-speed-limit-35--g2 (also -led-35).
+  function parseSignValue(ov) {
+    const m = /maximum-speed-limit(?:-led)?-(\d+)--/.exec(ov || '');
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  // Local equirectangular projection to metres around lat0.
+  function proj(lat, lng, lat0) {
+    const k = Math.PI / 180;
+    return [lng * 111320 * Math.cos(lat0 * k), lat * 110540];
+  }
+  function distPointSeg(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const x = a[0] + t * dx, y = a[1] + t * dy;
+    return Math.hypot(p[0] - x, p[1] - y);
+  }
+  function distToLine(lat, lng, pts) {
+    const p = proj(lat, lng, lat);
+    let best = Infinity, prev = proj(pts[0][0], pts[0][1], lat);
+    for (let i = 1; i < pts.length; i++) {
+      const cur = proj(pts[i][0], pts[i][1], lat);
+      const d = distPointSeg(p, prev, cur);
+      if (d < best) best = d;
+      prev = cur;
+    }
+    return best;
+  }
+  function prepLine(pts, value, props) {
+    let s = 90, w = 180, n = -90, e = -180;
+    for (const [la, lo] of pts) { if (la < s) s = la; if (la > n) n = la; if (lo < w) w = lo; if (lo > e) e = lo; }
+    return { pts, value, props, bb: [s, w, n, e] };
+  }
+  // Compare one sign value with a set of lines: {status, values[]}
+  function compare(sign, lines) {
+    const r = radius(), pad = 0.0012;
+    const vals = [];
+    for (const ln of lines) {
+      if (ln.value == null) continue;
+      const [s, w, n, e] = ln.bb;
+      if (sign.lat < s - pad || sign.lat > n + pad || sign.lng < w - pad || sign.lng > e + pad) continue;
+      if (distToLine(sign.lat, sign.lng, ln.pts) <= r) vals.push(ln.value);
+    }
+    if (!vals.length) return { status: 'nodata', values: [] };
+    const uniq = [...new Set(vals)];
+    return { status: uniq.includes(sign.value) ? 'match' : 'mismatch', values: uniq };
+  }
+
+  // ---------- data fetch ----------
+  function chunksFor(b) {
+    const step = 0.009;
+    const out = [];
+    const cols = Math.ceil((b.getEast() - b.getWest()) / step);
+    const rows = Math.ceil((b.getNorth() - b.getSouth()) / step);
+    if (cols * rows > 36) return null;
+    for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+      const w = b.getWest() + i * step, s = b.getSouth() + j * step;
+      out.push([w, s, Math.min(w + step, b.getEast()), Math.min(s + step, b.getNorth())]);
+    }
+    return out;
+  }
+
+  async function fetchSigns(chunks, token) {
+    const found = new Map();
+    let done = 0;
+    const queue = chunks.slice();
+    async function worker() {
+      while (queue.length) {
+        const [w, s, e, n] = queue.shift();
+        const url = 'https://graph.mapillary.com/map_features?access_token=' + encodeURIComponent(token) +
+          '&fields=id,object_value,geometry,first_seen_at,last_seen_at' +
+          '&bbox=' + [w, s, e, n].map(x => x.toFixed(6)).join(',') +
+          '&object_values=' + encodeURIComponent('regulatory--maximum-speed-limit-*') + '&limit=2000';
+        const res = await fetch(url);
+        if (!res.ok) {
+          let t = ''; try { t = (await res.text()).slice(0, 160); } catch (x) {}
+          throw new Error('Mapillary returned ' + res.status + (res.status === 400 || res.status === 401 ? ' (check the token)' : '') + ' ' + t);
+        }
+        const j = await res.json();
+        for (const f of (j.data || [])) {
+          const v = parseSignValue(f.object_value);
+          if (v == null || !f.geometry || !f.geometry.coordinates) continue;
+          found.set(f.id, { id: f.id, value: v, lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
+            first: f.first_seen_at, last: f.last_seen_at, ov: f.object_value });
+        }
+        done++;
+        setStatus('Mapillary: ' + done + ' of ' + chunks.length + ' areas loaded, ' + found.size + ' signs so far.');
+      }
+    }
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return [...found.values()];
+  }
+
+  async function fetchOsm(b) {
+    const q = '[out:json][timeout:25];way["highway"]["maxspeed"](' +
+      [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map(x => x.toFixed(6)).join(',') + ');out tags geom;';
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q)
+    });
+    if (!res.ok) throw new Error('Overpass returned ' + res.status);
+    const j = await res.json();
+    return (j.elements || []).filter(el => el.type === 'way' && el.geometry && el.geometry.length > 1).map(el => {
+      const pts = el.geometry.map(g => [g.lat, g.lon]);
+      const ln = prepLine(pts, parseMaxspeed(el.tags.maxspeed), el.tags);
+      ln.id = el.id; ln.raw = el.tags.maxspeed;
+      return ln;
+    });
+  }
+
+  // ---------- drawing ----------
+  const palette = { 15: '#7b61ff', 20: '#1f9d8b', 25: '#2f7ed8', 30: '#2f9e44', 35: '#f08c00', 40: '#e8590c', 45: '#d6336c', 50: '#c2255c', 55: '#862e9c', 65: '#495057' };
+  const colorFor = v => palette[v] || '#2f7ed8';
+
+  function drawOsm() {
+    osmLayer.clearLayers();
+    for (const ln of S.osm) {
+      const p = L.polyline(ln.pts, { color: colorFor(ln.value), weight: 5, opacity: 0.75 }).addTo(osmLayer);
+      p.bindPopup('<div class="pop"><b>' + esc(ln.raw) + '</b><br>' + esc(ln.props.name || ln.props.ref || 'Unnamed road') +
+        '<br><a href="https://www.openstreetmap.org/way/' + ln.id + '" target="_blank" rel="noopener">OSM way ' + ln.id + '</a></div>');
+    }
+  }
+
+  function drawGis() {
+    gisLayer.clearLayers();
+    for (const ln of S.gis) {
+      const p = L.polyline(ln.pts, { color: '#c026d3', weight: 3, dashArray: '6 6', opacity: 0.9 }).addTo(gisLayer);
+      p.bindPopup('<div class="pop"><b>GIS: ' + esc(ln.value == null ? 'no value' : ln.value + ' ' + unitLabel()) + '</b></div>');
+    }
+  }
+
+  function svUrl(lat, lng) {
+    return 'https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=' + lat.toFixed(6) + '%2C' + lng.toFixed(6);
+  }
+  const fmtDate = s => (s ? String(s).slice(0, 10) : 'n/a');
+  const cell = (r) => r.status === 'nodata' ? '<span class="na">no road</span>'
+    : r.status === 'match' ? '<span class="ok">' + r.values.join(', ') + '</span>'
+    : '<span class="bad">' + r.values.join(', ') + '</span>';
+
+  function popupHtml(sg) {
+    return '<div class="pop"><b>' + sg.value + ' ' + unitLabel() + '</b> sign' +
+      '<table><tr><td>OSM</td><td>' + cell(sg.cOsm) + '</td></tr><tr><td>GIS</td><td>' + (S.gis.length ? cell(sg.cGis) : '<span class="na">not loaded</span>') + '</td></tr>' +
+      '<tr><td>First seen</td><td>' + fmtDate(sg.first) + '</td></tr><tr><td>Last seen</td><td>' + fmtDate(sg.last) + '</td></tr></table>' +
+      '<p style="margin:6px 0 0"><a href="' + svUrl(sg.lat, sg.lng) + '" target="_blank" rel="noopener">Open Google Street View here</a></p>' +
+      '<div class="photo" data-id="' + esc(sg.id) + '"></div></div>';
+  }
+
+  function analyse() {
+    for (const sg of S.signs) {
+      sg.cOsm = compare(sg, S.osm);
+      sg.cGis = S.gis.length ? compare(sg, S.gis) : { status: 'nodata', values: [] };
+      sg.bad = sg.cOsm.status === 'mismatch' || sg.cGis.status === 'mismatch';
+      sg.good = !sg.bad && (sg.cOsm.status === 'match' || sg.cGis.status === 'match');
+    }
+  }
+
+  function drawSigns() {
+    signLayer.clearLayers();
+    S.markers.clear();
+    for (const sg of S.signs) {
+      const icon = L.divIcon({ className: 'sg ' + (sg.bad ? 'bad' : sg.good ? 'match' : ''), html: '<span>' + sg.value + '</span>', iconSize: [36, 38], iconAnchor: [18, 19] });
+      const m = L.marker([sg.lat, sg.lng], { icon, zIndexOffset: sg.bad ? 1000 : 0 }).addTo(signLayer);
+      m.bindPopup(() => popupHtml(sg), { minWidth: 220 });
+      m.on('popupopen', () => loadPhoto(sg));
+      S.markers.set(sg.id, m);
+    }
+  }
+
+  async function loadPhoto(sg) {
+    // Best effort: ask Mapillary for the source image of this detection and embed it. Fails quietly.
+    const token = $('token').value.trim();
+    if (!token) return;
+    try {
+      const res = await fetch('https://graph.mapillary.com/' + encodeURIComponent(sg.id) + '?access_token=' + encodeURIComponent(token) + '&fields=images');
+      if (!res.ok) return;
+      const j = await res.json();
+      const list = (j.images && (j.images.data || j.images)) || [];
+      const imgId = list[0] && (list[0].id || list[0]);
+      if (!imgId || typeof imgId === 'object') return;
+      const host = document.querySelector('.photo[data-id="' + CSS.escape(sg.id) + '"]');
+      if (host) host.innerHTML = '<iframe loading="lazy" src="https://www.mapillary.com/embed?image_key=' + encodeURIComponent(imgId) + '&style=photo" title="Mapillary photo"></iframe>';
+    } catch (e) { /* ignore */ }
+  }
+
+  function renderTable() {
+    const tb = $('tbl').querySelector('tbody');
+    tb.innerHTML = '';
+    const bad = S.signs.filter(s => s.bad);
+    $('count').textContent = bad.length;
+    for (const sg of bad.slice(0, 200)) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><b>' + sg.value + '</b></td><td>' + cell(sg.cOsm) + '</td><td>' + (S.gis.length ? cell(sg.cGis) : '<span class="na">n/a</span>') + '</td><td><button type="button">Show</button></td>';
+      tr.querySelector('button').addEventListener('click', () => {
+        map.setView([sg.lat, sg.lng], Math.max(map.getZoom(), 18));
+        const m = S.markers.get(sg.id); if (m) m.openPopup();
+      });
+      tb.appendChild(tr);
+    }
+    $('csvBtn').disabled = !S.signs.length;
+  }
+
+  function refresh() { analyse(); drawOsm(); drawGis(); drawSigns(); renderTable(); }
+
+  // ---------- actions ----------
+  async function load() {
+    const token = $('token').value.trim();
+    if (!token) { setStatus('Paste your Mapillary access token first.', true); return; }
+    store.set('sl_token', token);
+    const b = map.getBounds();
+    const chunks = chunksFor(b);
+    if (!chunks) { setStatus('That view is too large. Zoom in a few levels and try again.', true); return; }
+    $('loadBtn').disabled = true;
+    setStatus('Loading roads from OpenStreetMap...');
+    try {
+      const [osm, signs] = await Promise.all([
+        fetchOsm(b).catch(err => { console.warn(err); setStatus('OpenStreetMap roads failed (' + err.message + '). Signs will still load.', true); return []; }),
+        fetchSigns(chunks, token)
+      ]);
+      S.osm = osm; S.signs = signs;
+      refresh();
+      const bad = S.signs.filter(s => s.bad).length;
+      setStatus(S.signs.length + ' speed-limit signs, ' + S.osm.length + ' OSM roads with a limit. ' + bad + ' disagree.');
+    } catch (err) {
+      setStatus('Could not load signs: ' + err.message, true);
+    } finally {
+      $('loadBtn').disabled = false;
+    }
+  }
+
+  async function go() {
+    const q = $('q').value.trim();
+    if (!q) return;
+    const m = q.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+    if (m) { map.setView([+m[1], +m[2]], 17); return; }
+    try {
+      const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q));
+      const j = await res.json();
+      if (!j.length) { setStatus('No place found for that search.', true); return; }
+      map.setView([+j[0].lat, +j[0].lon], 17);
+    } catch (e) { setStatus('Address search failed (' + e.message + '). It can be blocked when the file is opened from disk. Type lat,lng instead, or host the page.', true); }
+  }
+
+  function readGis() {
+    const raw = S.gisRaw, field = $('gisField').value;
+    const lines = [];
+    for (const f of (raw.features || [])) {
+      const g = f.geometry; if (!g) continue;
+      const v = f.properties ? parseFloat(f.properties[field]) : NaN;
+      const val = isNaN(v) ? null : Math.round(v / 5) * 5;
+      const sets = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+      for (const c of sets) if (c.length > 1) lines.push(prepLine(c.map(p => [p[1], p[0]]), val, f.properties));
+    }
+    S.gis = lines;
+    refresh();
+    setStatus(lines.length + ' GIS line segments loaded using "' + field + '" (values read as ' + unitLabel() + ').');
+  }
+
+  $('gisFile').addEventListener('change', e => {
+    const file = e.target.files[0]; if (!file) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const j = JSON.parse(fr.result);
+        if (!j.features || !j.features.length) throw new Error('no features found');
+        S.gisRaw = j;
+        const props = Object.keys(j.features[0].properties || {});
+        const sel = $('gisField'); sel.innerHTML = '';
+        props.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; sel.appendChild(o); });
+        const guess = props.find(p => /speed|spd|limit|mph/i.test(p)); if (guess) sel.value = guess;
+        $('gisPick').hidden = false;
+        readGis();
+      } catch (err) { setStatus('Could not read that GIS file: ' + err.message + '. It must be GeoJSON in WGS84 (lat/long).', true); }
+    };
+    fr.readAsText(file);
+  });
+  $('gisField').addEventListener('change', () => S.gisRaw && readGis());
+  $('unit').addEventListener('change', () => { store.set('sl_unit', unit()); if (S.signs.length || S.osm.length) { S.osm.forEach(l => { l.value = parseMaxspeed(l.raw); }); if (S.gisRaw) readGis(); else refresh(); } });
+  $('radius').addEventListener('change', () => { if (S.signs.length) { refresh(); } });
+  $('loadBtn').addEventListener('click', load);
+  $('goBtn').addEventListener('click', go);
+  $('q').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+
+  $('csvBtn').addEventListener('click', () => {
+    const rows = [['id', 'lat', 'lng', 'sign_limit', 'unit', 'osm_values', 'osm_status', 'gis_values', 'gis_status', 'first_seen', 'last_seen', 'street_view']];
+    for (const s of S.signs) rows.push([s.id, s.lat, s.lng, s.value, unitLabel(), s.cOsm.values.join('|'), s.cOsm.status, s.cGis.values.join('|'), s.cGis.status, fmtDate(s.first), fmtDate(s.last), svUrl(s.lat, s.lng)]);
+    const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = 'speed-signs.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+
+  // restore saved settings
+  // Optional shared client token (option B). Leave empty so each user pastes their own.
+  const DEFAULT_TOKEN = '';
+  const t = store.get('sl_token') || DEFAULT_TOKEN; if (t) $('token').value = t;
+  const u = store.get('sl_unit'); if (u === 'mph' || u === 'kph') $('unit').value = u;
+  window.__SL = { S, parseMaxspeed, parseSignValue, compare, load };
+})();
+</script>
+</body>
+</html>
